@@ -30,7 +30,13 @@ import (
 	html_char_filter "github.com/blevesearch/bleve/v2/analysis/char/html"
 	regexp_char_filter "github.com/blevesearch/bleve/v2/analysis/char/regexp"
 	"github.com/blevesearch/bleve/v2/analysis/datetime/flexible"
+	"github.com/blevesearch/bleve/v2/analysis/datetime/iso"
+	"github.com/blevesearch/bleve/v2/analysis/datetime/percent"
 	"github.com/blevesearch/bleve/v2/analysis/datetime/sanitized"
+	"github.com/blevesearch/bleve/v2/analysis/datetime/timestamp/microseconds"
+	"github.com/blevesearch/bleve/v2/analysis/datetime/timestamp/milliseconds"
+	"github.com/blevesearch/bleve/v2/analysis/datetime/timestamp/nanoseconds"
+	"github.com/blevesearch/bleve/v2/analysis/datetime/timestamp/seconds"
 	"github.com/blevesearch/bleve/v2/analysis/token/length"
 	"github.com/blevesearch/bleve/v2/analysis/token/lowercase"
 	"github.com/blevesearch/bleve/v2/analysis/token/shingle"
@@ -282,7 +288,7 @@ func TestUnmarshalingSearchResult(t *testing.T) {
 func TestFacetNumericDateRangeRequests(t *testing.T) {
 	var drMissingErr = fmt.Errorf("date range query must specify either start, end or both for range name 'testName'")
 	var nrMissingErr = fmt.Errorf("numeric range query must specify either min, max or both for range name 'testName'")
-	var drNrErr = fmt.Errorf("facet can only conain numeric ranges or date ranges, not both")
+	var drNrErr = fmt.Errorf("facet can only contain numeric ranges or date ranges, not both")
 	var drNameDupErr = fmt.Errorf("date ranges contains duplicate name 'testName'")
 	var nrNameDupErr = fmt.Errorf("numeric ranges contains duplicate name 'testName'")
 	value := float64(5)
@@ -2470,6 +2476,903 @@ func TestCustomDateTimeParserLayoutValidation(t *testing.T) {
 		err := imap.AddCustomDateTimeParser(fmt.Sprintf("%d_DT_Flexi", idx), incorrectConfig)
 		if err != nil {
 			t.Fatalf("expected no error, got: %v", err)
+		}
+	}
+}
+
+func TestDateRangeStringQuery(t *testing.T) {
+	idxMapping := NewIndexMapping()
+
+	err := idxMapping.AddCustomDateTimeParser("customDT", map[string]interface{}{
+		"type": sanitized.Name,
+		"layouts": []interface{}{
+			"02/01/2006 15:04:05",
+			"2006/01/02 3:04PM",
+		},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = idxMapping.AddCustomDateTimeParser("queryDT", map[string]interface{}{
+		"type": sanitized.Name,
+		"layouts": []interface{}{
+			"02/01/2006 3:04PM",
+		},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dtmap := NewDateTimeFieldMapping()
+	dtmap.DateFormat = "customDT"
+	idxMapping.DefaultMapping.AddFieldMappingsAt("date", dtmap)
+
+	tmpIndexPath := createTmpIndexPath(t)
+	defer cleanupTmpIndexPath(t, tmpIndexPath)
+
+	idx, err := New(tmpIndexPath, idxMapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		err = idx.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+	documents := map[string]map[string]interface{}{
+		"doc1": {
+			"date": "2001/08/20 6:00PM",
+		},
+		"doc2": {
+			"date": "20/08/2001 18:00:20",
+		},
+		"doc3": {
+			"date": "20/08/2001 18:10:00",
+		},
+		"doc4": {
+			"date": "2001/08/20 6:15PM",
+		},
+		"doc5": {
+			"date": "20/08/2001 18:20:00",
+		},
+	}
+
+	batch := idx.NewBatch()
+	for docID, doc := range documents {
+		err := batch.Index(docID, doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = idx.Batch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type testResult struct {
+		docID    string // doc ID of the hit
+		hitField string // fields returned as part of the hit
+	}
+
+	type testStruct struct {
+		start          string
+		end            string
+		field          string
+		dateTimeParser string // name of the custom date time parser to use if nil, use QueryDateTimeParser
+		includeStart   bool
+		includeEnd     bool
+		expectedHits   []testResult
+		err            error
+	}
+
+	testQueries := []testStruct{
+		// test cases with RFC3339 parser and toggling includeStart and includeEnd
+		{
+			start:        "2001-08-20T18:00:00",
+			end:          "2001-08-20T18:10:00",
+			field:        "date",
+			includeStart: true,
+			includeEnd:   true,
+			expectedHits: []testResult{
+				{
+					docID:    "doc1",
+					hitField: "2001/08/20 6:00PM",
+				},
+				{
+					docID:    "doc2",
+					hitField: "20/08/2001 18:00:20",
+				},
+				{
+					docID:    "doc3",
+					hitField: "20/08/2001 18:10:00",
+				},
+			},
+		},
+		{
+			start:        "2001-08-20T18:00:00",
+			end:          "2001-08-20T18:10:00",
+			field:        "date",
+			includeStart: false,
+			includeEnd:   true,
+			expectedHits: []testResult{
+				{
+					docID:    "doc2",
+					hitField: "20/08/2001 18:00:20",
+				},
+				{
+					docID:    "doc3",
+					hitField: "20/08/2001 18:10:00",
+				},
+			},
+		},
+		{
+			start:        "2001-08-20T18:00:00",
+			end:          "2001-08-20T18:10:00",
+			field:        "date",
+			includeStart: false,
+			includeEnd:   false,
+			expectedHits: []testResult{
+				{
+					docID:    "doc2",
+					hitField: "20/08/2001 18:00:20",
+				},
+			},
+		},
+		// test cases with custom parser and omitting start and end
+		{
+			start:          "20/08/2001 18:00:00",
+			end:            "2001/08/20 6:10PM",
+			field:          "date",
+			dateTimeParser: "customDT",
+			includeStart:   true,
+			includeEnd:     true,
+			expectedHits: []testResult{
+				{
+					docID:    "doc1",
+					hitField: "2001/08/20 6:00PM",
+				},
+				{
+					docID:    "doc2",
+					hitField: "20/08/2001 18:00:20",
+				},
+				{
+					docID:    "doc3",
+					hitField: "20/08/2001 18:10:00",
+				},
+			},
+		},
+		{
+			end:            "20/08/2001 18:15:00",
+			field:          "date",
+			dateTimeParser: "customDT",
+			includeStart:   true,
+			includeEnd:     true,
+			expectedHits: []testResult{
+				{
+					docID:    "doc1",
+					hitField: "2001/08/20 6:00PM",
+				},
+				{
+					docID:    "doc2",
+					hitField: "20/08/2001 18:00:20",
+				},
+				{
+					docID:    "doc3",
+					hitField: "20/08/2001 18:10:00",
+				},
+				{
+					docID:    "doc4",
+					hitField: "2001/08/20 6:15PM",
+				},
+			},
+		},
+		{
+			start:          "2001/08/20 6:15PM",
+			field:          "date",
+			dateTimeParser: "customDT",
+			includeStart:   true,
+			includeEnd:     true,
+			expectedHits: []testResult{
+				{
+					docID:    "doc4",
+					hitField: "2001/08/20 6:15PM",
+				},
+				{
+					docID:    "doc5",
+					hitField: "20/08/2001 18:20:00",
+				},
+			},
+		},
+		{
+			start:          "20/08/2001 6:15PM",
+			field:          "date",
+			dateTimeParser: "queryDT",
+			includeStart:   true,
+			includeEnd:     true,
+			expectedHits: []testResult{
+				{
+					docID:    "doc4",
+					hitField: "2001/08/20 6:15PM",
+				},
+				{
+					docID:    "doc5",
+					hitField: "20/08/2001 18:20:00",
+				},
+			},
+		},
+		// error path test cases
+		{
+			field:          "date",
+			dateTimeParser: "customDT",
+			includeStart:   true,
+			includeEnd:     true,
+			err:            fmt.Errorf("date range query must specify at least one of start/end"),
+		},
+		{
+			field:        "date",
+			includeStart: true,
+			includeEnd:   true,
+			err:          fmt.Errorf("date range query must specify at least one of start/end"),
+		},
+		{
+			start:          "2001-08-20T18:00:00",
+			end:            "2001-08-20T18:10:00",
+			field:          "date",
+			dateTimeParser: "customDT",
+			err:            fmt.Errorf("unable to parse datetime with any of the layouts, date time parser name: customDT"),
+		},
+		{
+			start: "3001-08-20T18:00:00",
+			end:   "2001-08-20T18:10:00",
+			field: "date",
+			err:   fmt.Errorf("invalid/unsupported date range, start: 3001-08-20T18:00:00"),
+		},
+		{
+			start:          "2001/08/20 6:00PM",
+			end:            "3001/08/20 6:30PM",
+			field:          "date",
+			dateTimeParser: "customDT",
+			err:            fmt.Errorf("invalid/unsupported date range, end: 3001/08/20 6:30PM"),
+		},
+	}
+
+	for _, dtq := range testQueries {
+		var err error
+		dateQuery := NewDateRangeInclusiveStringQuery(dtq.start, dtq.end, &dtq.includeStart, &dtq.includeEnd)
+		dateQuery.SetDateTimeParser(dtq.dateTimeParser)
+		dateQuery.SetField(dtq.field)
+
+		sr := NewSearchRequest(dateQuery)
+		sr.SortBy([]string{dtq.field})
+		sr.Fields = []string{dtq.field}
+
+		res, err := idx.Search(sr)
+		if err != nil {
+			if dtq.err == nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			if dtq.err.Error() != err.Error() {
+				t.Fatalf("expected error: %v, got: %v", dtq.err, err)
+			}
+			continue
+		}
+		if len(res.Hits) != len(dtq.expectedHits) {
+			t.Fatalf("expected %d hits, got %d", len(dtq.expectedHits), len(res.Hits))
+		}
+		for i, hit := range res.Hits {
+			if hit.ID != dtq.expectedHits[i].docID {
+				t.Fatalf("expected docID %s, got %s", dtq.expectedHits[i].docID, hit.ID)
+			}
+			if hit.Fields[dtq.field].(string) != dtq.expectedHits[i].hitField {
+				t.Fatalf("expected hit field %s, got %s", dtq.expectedHits[i].hitField, hit.Fields[dtq.field])
+			}
+		}
+	}
+}
+
+func TestDateRangeFaceQueriesWithCustomDateTimeParser(t *testing.T) {
+	idxMapping := NewIndexMapping()
+
+	err := idxMapping.AddCustomDateTimeParser("customDT", map[string]interface{}{
+		"type": sanitized.Name,
+		"layouts": []interface{}{
+			"02/01/2006 15:04:05",
+			"2006/01/02 3:04PM",
+		},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = idxMapping.AddCustomDateTimeParser("queryDT", map[string]interface{}{
+		"type": sanitized.Name,
+		"layouts": []interface{}{
+			"02/01/2006 3:04PM",
+		},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dtmap := NewDateTimeFieldMapping()
+	dtmap.DateFormat = "customDT"
+	idxMapping.DefaultMapping.AddFieldMappingsAt("date", dtmap)
+
+	tmpIndexPath := createTmpIndexPath(t)
+	defer cleanupTmpIndexPath(t, tmpIndexPath)
+
+	idx, err := New(tmpIndexPath, idxMapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		err = idx.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+	documents := map[string]map[string]interface{}{
+		"doc1": {
+			"date": "2001/08/20 6:00PM",
+		},
+		"doc2": {
+			"date": "20/08/2001 18:00:20",
+		},
+		"doc3": {
+			"date": "20/08/2001 18:10:00",
+		},
+		"doc4": {
+			"date": "2001/08/20 6:15PM",
+		},
+		"doc5": {
+			"date": "20/08/2001 18:20:00",
+		},
+	}
+
+	batch := idx.NewBatch()
+	for docID, doc := range documents {
+		err := batch.Index(docID, doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = idx.Batch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	query := NewMatchAllQuery()
+
+	type testFacetResult struct {
+		name  string
+		start string
+		end   string
+		count int
+		err   error
+	}
+
+	type testFacetRequest struct {
+		name   string
+		start  string
+		end    string
+		parser string
+		result testFacetResult
+	}
+
+	tests := []testFacetRequest{
+		{
+			// Test without a query time override of the parser (use default parser)
+			name:  "test",
+			start: "2001-08-20 18:00:00",
+			end:   "2001-08-20 18:10:00",
+			result: testFacetResult{
+				name:  "test",
+				start: "2001-08-20 18:00:00",
+				end:   "2001-08-20 18:10:00",
+				count: 2,
+				err:   nil,
+			},
+		},
+		{
+			name:   "test",
+			start:  "20/08/2001 6:00PM",
+			end:    "20/08/2001 6:10PM",
+			parser: "queryDT",
+			result: testFacetResult{
+				name:  "test",
+				start: "20/08/2001 6:00PM",
+				end:   "20/08/2001 6:10PM",
+				count: 2,
+				err:   nil,
+			},
+		},
+		{
+			name:   "test",
+			start:  "20/08/2001 15:00:00",
+			end:    "2001/08/20 6:10PM",
+			parser: "customDT",
+			result: testFacetResult{
+				name:  "test",
+				start: "20/08/2001 15:00:00",
+				end:   "2001/08/20 6:10PM",
+				count: 2,
+				err:   nil,
+			},
+		},
+		{
+			name:   "test",
+			end:    "2001/08/20 6:15PM",
+			parser: "customDT",
+			result: testFacetResult{
+				name:  "test",
+				end:   "2001/08/20 6:15PM",
+				count: 3,
+				err:   nil,
+			},
+		},
+		{
+			name:   "test",
+			start:  "20/08/2001 6:15PM",
+			parser: "queryDT",
+			result: testFacetResult{
+				name:  "test",
+				start: "20/08/2001 6:15PM",
+				count: 2,
+				err:   nil,
+			},
+		},
+		// some error cases
+		{
+			name:   "test",
+			parser: "queryDT",
+			result: testFacetResult{
+				name: "test",
+				err:  fmt.Errorf("date range query must specify either start, end or both for date range name 'test'"),
+			},
+		},
+		{
+			// default parser is used for the query, but the start time is not in the correct format (RFC3339),
+			// so it should throw an error
+			name:  "test",
+			start: "20/08/2001 6:15PM",
+			result: testFacetResult{
+				name: "test",
+				err:  fmt.Errorf("ParseDates err: error parsing start date '20/08/2001 6:15PM' for date range name 'test': unable to parse datetime with any of the layouts, using date time parser named dateTimeOptional"),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		searchRequest := NewSearchRequest(query)
+
+		fr := NewFacetRequest("date", 100)
+		start := &test.start
+		if test.start == "" {
+			start = nil
+		}
+		end := &test.end
+		if test.end == "" {
+			end = nil
+		}
+
+		fr.AddDateTimeRangeStringWithParser(test.name, start, end, test.parser)
+		searchRequest.AddFacet("dateFacet", fr)
+
+		searchResults, err := idx.Search(searchRequest)
+		if err != nil {
+			if test.result.err == nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if err.Error() != test.result.err.Error() {
+				t.Fatalf("Expected error %v, got %v", test.result.err, err)
+			}
+			continue
+		}
+		for _, facetResult := range searchResults.Facets {
+			if len(facetResult.DateRanges) != 1 {
+				t.Fatal("Expected 1 date range facet")
+			}
+			result := facetResult.DateRanges[0]
+			if result.Name != test.result.name {
+				t.Fatalf("Expected name %s, got %s", test.result.name, result.Name)
+			}
+			if result.Start != nil && *result.Start != test.result.start {
+				t.Fatalf("Expected start %s, got %s", test.result.start, *result.Start)
+			}
+			if result.End != nil && *result.End != test.result.end {
+				t.Fatalf("Expected end %s, got %s", test.result.end, *result.End)
+			}
+			if result.Start == nil && test.result.start != "" {
+				t.Fatalf("Expected start %s, got nil", test.result.start)
+			}
+			if result.End == nil && test.result.end != "" {
+				t.Fatalf("Expected end %s, got nil", test.result.end)
+			}
+			if result.Count != test.result.count {
+				t.Fatalf("Expected count %d, got %d", test.result.count, result.Count)
+			}
+		}
+	}
+}
+
+func TestDateRangeTimestampQueries(t *testing.T) {
+	tmpIndexPath := createTmpIndexPath(t)
+	defer cleanupTmpIndexPath(t, tmpIndexPath)
+
+	imap := mapping.NewIndexMapping()
+
+	// add a date field with a valid format to the default mapping
+	// for good measure
+
+	dtParserConfig := map[string]interface{}{
+		"type":    flexible.Name,
+		"layouts": []interface{}{"2006/01/02 15:04:05"},
+	}
+	err := imap.AddCustomDateTimeParser("custDT", dtParserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dateField := mapping.NewDateTimeFieldMapping()
+	dateField.DateFormat = "custDT"
+
+	unixSecField := mapping.NewDateTimeFieldMapping()
+	unixSecField.DateFormat = seconds.Name
+
+	unixMilliSecField := mapping.NewDateTimeFieldMapping()
+	unixMilliSecField.DateFormat = milliseconds.Name
+
+	unixMicroSecField := mapping.NewDateTimeFieldMapping()
+	unixMicroSecField.DateFormat = microseconds.Name
+
+	unixNanoSecField := mapping.NewDateTimeFieldMapping()
+	unixNanoSecField.DateFormat = nanoseconds.Name
+
+	imap.DefaultMapping.AddFieldMappingsAt("date", dateField)
+	imap.DefaultMapping.AddFieldMappingsAt("seconds", unixSecField)
+	imap.DefaultMapping.AddFieldMappingsAt("milliseconds", unixMilliSecField)
+	imap.DefaultMapping.AddFieldMappingsAt("microseconds", unixMicroSecField)
+	imap.DefaultMapping.AddFieldMappingsAt("nanoseconds", unixNanoSecField)
+
+	idx, err := New(tmpIndexPath, imap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		err = idx.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	documents := map[string]map[string]interface{}{
+		"doc1": {
+			"date":         "2001/08/20 03:00:10",
+			"seconds":      "998276410",
+			"milliseconds": "998276410100",
+			"microseconds": "998276410100300",
+			"nanoseconds":  "998276410100300400",
+		},
+		"doc2": {
+			"date":         "2001/08/20 03:00:20",
+			"seconds":      "998276420",
+			"milliseconds": "998276410200",
+			"microseconds": "998276410100400",
+			"nanoseconds":  "998276410100300500",
+		},
+		"doc3": {
+			"date":         "2001/08/20 03:00:30",
+			"seconds":      "998276430",
+			"milliseconds": "998276410300",
+			"microseconds": "998276410100500",
+			"nanoseconds":  "998276410100300600",
+		},
+		"doc4": {
+			"date":         "2001/08/20 03:00:40",
+			"seconds":      "998276440",
+			"milliseconds": "998276410400",
+			"microseconds": "998276410100600",
+			"nanoseconds":  "998276410100300700",
+		},
+		"doc5": {
+			"date":         "2001/08/20 03:00:50",
+			"seconds":      "998276450",
+			"milliseconds": "998276410500",
+			"microseconds": "998276410100700",
+			"nanoseconds":  "998276410100300800",
+		},
+	}
+
+	batch := idx.NewBatch()
+	for docID, doc := range documents {
+		err := batch.Index(docID, doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = idx.Batch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type testResult struct {
+		docID    string // doc ID of the hit
+		hitField string // fields returned as part of the hit
+	}
+	type testStruct struct {
+		start        string
+		end          string
+		field        string
+		expectedHits []testResult
+	}
+
+	testQueries := []testStruct{
+		{
+			start: "2001-08-20T03:00:05",
+			end:   "2001-08-20T03:00:25",
+			field: "date",
+			expectedHits: []testResult{
+				{
+					docID:    "doc1",
+					hitField: "2001/08/20 03:00:10",
+				},
+				{
+					docID:    "doc2",
+					hitField: "2001/08/20 03:00:20",
+				},
+			},
+		},
+		{
+			start: "2001-08-20T03:00:15",
+			end:   "2001-08-20T03:00:35",
+			field: "seconds",
+			expectedHits: []testResult{
+				{
+					docID:    "doc2",
+					hitField: "998276420000000000",
+				},
+				{
+					docID:    "doc3",
+					hitField: "998276430000000000",
+				},
+			},
+		},
+		{
+			start: "2001-08-20T03:00:10.150",
+			end:   "2001-08-20T03:00:10.450",
+			field: "milliseconds",
+			expectedHits: []testResult{
+				{
+					docID:    "doc2",
+					hitField: "998276410200000000",
+				},
+				{
+					docID:    "doc3",
+					hitField: "998276410300000000",
+				},
+				{
+					docID:    "doc4",
+					hitField: "998276410400000000",
+				},
+			},
+		},
+		{
+			start: "2001-08-20T03:00:10.100450",
+			end:   "2001-08-20T03:00:10.100650",
+			field: "microseconds",
+			expectedHits: []testResult{
+				{
+					docID:    "doc3",
+					hitField: "998276410100500000",
+				},
+				{
+					docID:    "doc4",
+					hitField: "998276410100600000",
+				},
+			},
+		},
+		{
+			start: "2001-08-20T03:00:10.100300550",
+			end:   "2001-08-20T03:00:10.100300850",
+			field: "nanoseconds",
+			expectedHits: []testResult{
+				{
+					docID:    "doc3",
+					hitField: "998276410100300600",
+				},
+				{
+					docID:    "doc4",
+					hitField: "998276410100300700",
+				},
+				{
+					docID:    "doc5",
+					hitField: "998276410100300800",
+				},
+			},
+		},
+	}
+	testLayout := "2006-01-02T15:04:05"
+	for _, dtq := range testQueries {
+		startTime, err := time.Parse(testLayout, dtq.start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		endTime, err := time.Parse(testLayout, dtq.end)
+		if err != nil {
+			t.Fatal(err)
+		}
+		drq := NewDateRangeQuery(startTime, endTime)
+		drq.SetField(dtq.field)
+
+		sr := NewSearchRequest(drq)
+		sr.SortBy([]string{dtq.field})
+		sr.Fields = []string{dtq.field}
+
+		res, err := idx.Search(sr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Hits) != len(dtq.expectedHits) {
+			t.Fatalf("expected %d hits, got %d", len(dtq.expectedHits), len(res.Hits))
+		}
+		for i, hit := range res.Hits {
+			if hit.ID != dtq.expectedHits[i].docID {
+				t.Fatalf("expected docID %s, got %s", dtq.expectedHits[i].docID, hit.ID)
+			}
+			if hit.Fields[dtq.field].(string) != dtq.expectedHits[i].hitField {
+				t.Fatalf("expected hit field %s, got %s", dtq.expectedHits[i].hitField, hit.Fields[dtq.field])
+			}
+		}
+	}
+}
+
+func TestPercentAndIsoStyleDates(t *testing.T) {
+	percentName := percent.Name
+	isoName := iso.Name
+
+	imap := mapping.NewIndexMapping()
+	percentConfig := map[string]interface{}{
+		"type": percentName,
+		"layouts": []interface{}{
+			"%Y/%m/%d %l:%M%p",                // doc 1
+			"%d/%m/%Y %H:%M:%S",               // doc 2
+			"%Y-%m-%dT%H:%M:%S%z",             // doc 3
+			"%d %B %y %l%p %Z",                // doc 4
+			"%Y; %b %d (%a) %I:%M:%S.%N%P %z", // doc 5
+		},
+	}
+	isoConfig := map[string]interface{}{
+		"type": isoName,
+		"layouts": []interface{}{
+			"yyyy/MM/dd h:mma",                       // doc 1
+			"dd/MM/yyyy HH:mm:ss",                    // doc 2
+			"yyyy-MM-dd'T'HH:mm:ssXX",                // doc 3
+			"dd MMMM yy ha z",                        // doc 4
+			"yyyy; MMM dd (EEE) hh:mm:ss.SSSSSaa xx", // doc 5
+		},
+	}
+
+	err := imap.AddCustomDateTimeParser("percentDate", percentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = imap.AddCustomDateTimeParser("isoDate", isoConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	percentField := mapping.NewDateTimeFieldMapping()
+	percentField.DateFormat = "percentDate"
+
+	isoField := mapping.NewDateTimeFieldMapping()
+	isoField.DateFormat = "isoDate"
+
+	imap.DefaultMapping.AddFieldMappingsAt("percentDate", percentField)
+	imap.DefaultMapping.AddFieldMappingsAt("isoDate", isoField)
+
+	tmpIndexPath := createTmpIndexPath(t)
+	defer cleanupTmpIndexPath(t, tmpIndexPath)
+
+	idx, err := New(tmpIndexPath, imap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		err = idx.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	documents := map[string]map[string]interface{}{
+		"doc1": {
+			"percentDate": "2001/08/20 6:00PM",
+			"isoDate":     "2001/08/20 6:00PM",
+		},
+		"doc2": {
+			"percentDate": "20/08/2001 18:05:00",
+			"isoDate":     "20/08/2001 18:05:00",
+		},
+		"doc3": {
+			"percentDate": "2001-08-20T18:10:00Z",
+			"isoDate":     "2001-08-20T18:10:00Z",
+		},
+		"doc4": {
+			"percentDate": "20 August 01 6PM UTC",
+			"isoDate":     "20 August 01 6PM UTC",
+		},
+		"doc5": {
+			"percentDate": "2001; Aug 20 (Mon) 06:15:15.23456pm +0000",
+			"isoDate":     "2001; Aug 20 (Mon) 06:15:15.23456pm +0000",
+		},
+	}
+
+	batch := idx.NewBatch()
+	for docID, doc := range documents {
+		err := batch.Index(docID, doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = idx.Batch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type testStruct struct {
+		start string
+		end   string
+		field string
+	}
+
+	for _, field := range []string{"percentDate", "isoDate"} {
+		testQueries := []testStruct{
+			{
+				start: "2001/08/20 6:00PM",
+				end:   "2001/08/20 6:20PM",
+				field: field,
+			},
+			{
+				start: "20/08/2001 18:00:00",
+				end:   "20/08/2001 18:20:00",
+				field: field,
+			},
+			{
+				start: "2001-08-20T18:00:00Z",
+				end:   "2001-08-20T18:20:00Z",
+				field: field,
+			},
+			{
+				start: "20 August 01 6PM UTC",
+				end:   "20 August 01 7PM UTC",
+				field: field,
+			},
+			{
+				start: "2001; Aug 20 (Mon) 06:00:00.00000pm +0000",
+				end:   "2001; Aug 20 (Mon) 06:20:20.00000pm +0000",
+				field: field,
+			},
+		}
+		includeStart := true
+		includeEnd := true
+		for _, dtq := range testQueries {
+			drq := NewDateRangeInclusiveStringQuery(dtq.start, dtq.end, &includeStart, &includeEnd)
+			drq.SetField(dtq.field)
+			drq.SetDateTimeParser(field)
+			sr := NewSearchRequest(drq)
+			res, err := idx.Search(sr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Hits) != 5 {
+				t.Fatalf("expected %d hits, got %d", 5, len(res.Hits))
+			}
 		}
 	}
 }
