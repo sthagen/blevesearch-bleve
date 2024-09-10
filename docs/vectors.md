@@ -14,7 +14,7 @@
     * *v2.4.0* requires [blevesearch/faiss@7b119f4](https://github.com/blevesearch/faiss/tree/7b119f4b9c408989b696b36f8cc53908e53de6db) (modified v1.7.4)
     * *v2.4.1* requires [blevesearch/faiss@d9db66a](https://github.com/blevesearch/faiss/tree/d9db66a38518d99eb334218697e1df0732f3fdf8) (modified v1.7.4)
     * *v2.4.2* requires [blevesearch/faiss@d9db66a](https://github.com/blevesearch/faiss/tree/d9db66a38518d99eb334218697e1df0732f3fdf8) (modified v1.7.4)
-    * *v2.4.3* requires [blevesearch/faiss@5ab1ce0](https://github.com/blevesearch/faiss/tree/5ab1ce067475fde3753c5a765db68c679e6b3723) (modified v1.8.0)
+    * *v2.4.3* requires [blevesearch/faiss@f077bf9](https://github.com/blevesearch/faiss/tree/f077bf939ff4768091760ef7c7051b86f799a919) (modified v1.8.0)
 
 ## Supported
 
@@ -73,6 +73,25 @@ searchRequest.AddKNN(
     []float32{10,11,12,13,14,15,16,17,18,19},   // query vector (same dims)
     5,                                          // k
     0,                                          // boost
+)
+searchResult, err := index.Search(searchRequest)
+if err != nil {
+    panic(err)
+}
+fmt.Println(searchResult.Hits)
+```
+
+## Querying with filters (v2.4.3+)
+
+```go
+searchRequest := NewSearchRequest(query.NewMatchNoneQuery())
+filterQuery := NewTermQuery("hello")
+searchRequest.AddKNNWithFilter(
+    "vec",                                      // vector field name
+    []float32{10,11,12,13,14,15,16,17,18,19},   // query vector (same dims)
+    5,                                          // k
+    0,                                          // boost
+    filterQuery,                                // filter query
 )
 searchResult, err := index.Search(searchRequest)
 if err != nil {
