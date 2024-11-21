@@ -24,6 +24,19 @@ import (
 
 var MaxFuzziness = 2
 
+// AutoFuzzinessHighThreshold is the threshold for the term length
+// above which the fuzziness is set to MaxFuzziness when the fuzziness
+// mode is set to AutoFuzziness.
+var AutoFuzzinessHighThreshold = 5
+
+// AutoFuzzinessLowThreshold is the threshold for the term length
+// below which the fuzziness is set to zero when the fuzziness mode
+// is set to AutoFuzziness.
+// For terms with length between AutoFuzzinessLowThreshold and
+// AutoFuzzinessHighThreshold, the fuzziness is set to
+// MaxFuzziness - 1.
+var AutoFuzzinessLowThreshold = 2
+
 func NewFuzzySearcher(ctx context.Context, indexReader index.IndexReader, term string,
 	prefix, fuzziness int, field string, boost float64,
 	options search.SearcherOptions) (search.Searcher, error) {
@@ -34,6 +47,19 @@ func NewFuzzySearcher(ctx context.Context, indexReader index.IndexReader, term s
 
 	if fuzziness < 0 {
 		return nil, fmt.Errorf("invalid fuzziness, negative")
+	}
+	if fuzziness == 0 {
+		// no fuzziness, just do a term search
+		// check if the call is made from a phrase searcher
+		// and if so, add the term to the fuzzy term matches
+		// since the fuzzy candidate terms are not collected
+		// for a term search, and the only candidate term is
+		// the term itself
+		fuzzyTermMatches := ctx.Value(search.FuzzyMatchPhraseKey)
+		if fuzzyTermMatches != nil {
+			fuzzyTermMatches.(map[string][]string)[term] = []string{term}
+		}
+		return NewTermSearcher(ctx, indexReader, term, field, boost, options)
 	}
 
 	// Note: we don't byte slice the term for a prefix because of runes.
@@ -52,9 +78,11 @@ func NewFuzzySearcher(ctx context.Context, indexReader index.IndexReader, term s
 	}
 
 	var candidates []string
+	var editDistances []uint8
 	var dictBytesRead uint64
 	if fuzzyCandidates != nil {
 		candidates = fuzzyCandidates.candidates
+		editDistances = fuzzyCandidates.editDistances
 		dictBytesRead = fuzzyCandidates.bytesRead
 	}
 
@@ -67,13 +95,29 @@ func NewFuzzySearcher(ctx context.Context, indexReader index.IndexReader, term s
 		}
 	}
 
-	return NewMultiTermSearcher(ctx, indexReader, candidates, field,
-		boost, options, true)
+	return NewMultiTermSearcherBoosted(ctx, indexReader, candidates, field,
+		boost, editDistances, options, true)
+}
+
+func getAutoFuzziness(term string) int {
+	termLength := len(term)
+	if termLength > AutoFuzzinessHighThreshold {
+		return MaxFuzziness
+	} else if termLength > AutoFuzzinessLowThreshold {
+		return MaxFuzziness - 1
+	}
+	return 0
+}
+
+func NewAutoFuzzySearcher(ctx context.Context, indexReader index.IndexReader, term string,
+	prefix int, field string, boost float64, options search.SearcherOptions) (search.Searcher, error) {
+	return NewFuzzySearcher(ctx, indexReader, term, prefix, getAutoFuzziness(term), field, boost, options)
 }
 
 type fuzzyCandidates struct {
-	candidates []string
-	bytesRead  uint64
+	candidates    []string
+	editDistances []uint8
+	bytesRead     uint64
 }
 
 func reportIOStats(ctx context.Context, bytesRead uint64) {
@@ -91,7 +135,8 @@ func reportIOStats(ctx context.Context, bytesRead uint64) {
 func findFuzzyCandidateTerms(indexReader index.IndexReader, term string,
 	fuzziness int, field, prefixTerm string) (rv *fuzzyCandidates, err error) {
 	rv = &fuzzyCandidates{
-		candidates: make([]string, 0),
+		candidates:    make([]string, 0),
+		editDistances: make([]uint8, 0),
 	}
 
 	// in case of advanced reader implementations directly call
@@ -110,6 +155,7 @@ func findFuzzyCandidateTerms(indexReader index.IndexReader, term string,
 		tfd, err := fieldDict.Next()
 		for err == nil && tfd != nil {
 			rv.candidates = append(rv.candidates, tfd.Term)
+			rv.editDistances = append(rv.editDistances, tfd.EditDistance)
 			if tooManyClauses(len(rv.candidates)) {
 				return nil, tooManyClausesErr(field, len(rv.candidates))
 			}
@@ -144,6 +190,7 @@ func findFuzzyCandidateTerms(indexReader index.IndexReader, term string,
 		ld, exceeded, reuse = search.LevenshteinDistanceMaxReuseSlice(term, tfd.Term, fuzziness, reuse)
 		if !exceeded && ld <= fuzziness {
 			rv.candidates = append(rv.candidates, tfd.Term)
+			rv.editDistances = append(rv.editDistances, uint8(ld))
 			if tooManyClauses(len(rv.candidates)) {
 				return nil, tooManyClausesErr(field, len(rv.candidates))
 			}
