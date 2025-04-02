@@ -550,7 +550,7 @@ func TestVectorBase64Index(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for i, _ := range searchRequests {
+	for i := range searchRequests {
 		for _, operator := range knnOperators {
 			controlQuery := searchRequests[i]
 			testQuery := searchRequestsCopy[i]
@@ -569,7 +569,7 @@ func TestVectorBase64Index(t *testing.T) {
 
 			if controlResultL2 != nil && testResultL2 != nil {
 				if len(controlResultL2.Hits) == len(testResultL2.Hits) {
-					for j, _ := range controlResultL2.Hits {
+					for j := range controlResultL2.Hits {
 						if controlResultL2.Hits[j].ID != testResultL2.Hits[j].ID {
 							t.Fatalf("testcase %d failed: expected hit id %s, got hit id %s", i, controlResultL2.Hits[j].ID, testResultL2.Hits[j].ID)
 						}
@@ -591,7 +591,7 @@ func TestVectorBase64Index(t *testing.T) {
 
 			if controlResultDot != nil && testResultDot != nil {
 				if len(controlResultDot.Hits) == len(testResultDot.Hits) {
-					for j, _ := range controlResultDot.Hits {
+					for j := range controlResultDot.Hits {
 						if controlResultDot.Hits[j].ID != testResultDot.Hits[j].ID {
 							t.Fatalf("testcase %d failed: expected hit id %s, got hit id %s", i, controlResultDot.Hits[j].ID, testResultDot.Hits[j].ID)
 						}
@@ -1371,8 +1371,7 @@ func TestKNNOperator(t *testing.T) {
 
 	// Conjunction
 	searchRequest.AddKNNOperator(knnOperatorAnd)
-	requiresFiltering := make(map[int]bool)
-	conjunction, _, _, err := createKNNQuery(searchRequest, nil, requiresFiltering)
+	conjunction, _, _, err := createKNNQuery(searchRequest, nil)
 	if err != nil {
 		t.Fatalf("unexpected error for AND knn operator")
 	}
@@ -1388,7 +1387,7 @@ func TestKNNOperator(t *testing.T) {
 
 	// Disjunction
 	searchRequest.AddKNNOperator(knnOperatorOr)
-	disjunction, _, _, err := createKNNQuery(searchRequest, nil, requiresFiltering)
+	disjunction, _, _, err := createKNNQuery(searchRequest, nil)
 	if err != nil {
 		t.Fatalf("unexpected error for OR knn operator")
 	}
@@ -1404,7 +1403,7 @@ func TestKNNOperator(t *testing.T) {
 
 	// Incorrect operator.
 	searchRequest.AddKNNOperator("bs_op")
-	searchRequest.Query, _, _, err = createKNNQuery(searchRequest, nil, requiresFiltering)
+	searchRequest.Query, _, _, err = createKNNQuery(searchRequest, nil)
 	if err == nil {
 		t.Fatalf("expected error for incorrect knn operator")
 	}

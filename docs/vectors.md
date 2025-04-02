@@ -11,12 +11,12 @@
 * A `vectors` GO TAG needs to be set for bleve to access all the supporting code. This TAG must be set only after the FAISS shared library is made available. Failure to do either will inhibit you from using this feature.
 * Please follow these [instructions](#setup-instructions) below for any assistance in the area.
 * Releases of `blevesearch/bleve` work with select checkpoints of `blevesearch/faiss` owing to API changes and improvements (tracking over the `bleve` branch):
-    * *v2.4.0* requires [blevesearch/faiss@7b119f4b](https://github.com/blevesearch/faiss/tree/7b119f4b9c408989b696b36f8cc53908e53de6db) (modified v1.7.4)
-    * *v2.4.1* requires [blevesearch/faiss@d9db66a3](https://github.com/blevesearch/faiss/tree/d9db66a38518d99eb334218697e1df0732f3fdf8) (modified v1.7.4)
-    * *v2.4.2* requires [blevesearch/faiss@d9db66a3](https://github.com/blevesearch/faiss/tree/d9db66a38518d99eb334218697e1df0732f3fdf8) (modified v1.7.4)
-    * *v2.4.3* requires [blevesearch/faiss@b747c55a](https://github.com/blevesearch/faiss/tree/b747c55a93a9627039c34d44b081f375dca94e57) (modified v1.8.0)
-    * *v2.4.4* requires [blevesearch/faiss@b747c55a](https://github.com/blevesearch/faiss/tree/b747c55a93a9627039c34d44b081f375dca94e57) (modified v1.8.0)
-    * *v2.5.0* requires [blevesearch/faiss@b4cc942e](https://github.com/blevesearch/faiss/tree/b4cc942e150655784101da2ffb13f68d23040e31) (modified v1.10.0)
+    * *v2.4.0* requires [blevesearch/faiss@7b119f4](https://github.com/blevesearch/faiss/tree/7b119f4b9c408989b696b36f8cc53908e53de6db) (modified v1.7.4)
+    * *v2.4.1* requires [blevesearch/faiss@d9db66a](https://github.com/blevesearch/faiss/tree/d9db66a38518d99eb334218697e1df0732f3fdf8) (modified v1.7.4)
+    * *v2.4.2* requires [blevesearch/faiss@d9db66a](https://github.com/blevesearch/faiss/tree/d9db66a38518d99eb334218697e1df0732f3fdf8) (modified v1.7.4)
+    * *v2.4.3* requires [blevesearch/faiss@b747c55](https://github.com/blevesearch/faiss/tree/b747c55a93a9627039c34d44b081f375dca94e57) (modified v1.8.0)
+    * *v2.4.4* requires [blevesearch/faiss@b747c55](https://github.com/blevesearch/faiss/tree/b747c55a93a9627039c34d44b081f375dca94e57) (modified v1.8.0)
+    * *v2.5.0* requires [blevesearch/faiss@352484e](https://github.com/blevesearch/faiss/tree/352484e0fc9d1f8f46737841efe5f26e0f383f71) (modified v1.10.0)
 
 ## Supported
 
@@ -137,9 +137,13 @@ sudo cp build/c_api/libfaiss_c.dylib /usr/local/lib
 
 ### Sanity check
 
-Once the supporting library is built and made available, a sanity run is recommended to make sure all unit tests and especially those accessing the vectors' code pass. Here's how I do on mac -
+Once the supporting library is built and made available, a sanity run is recommended to make sure all unit tests and especially those accessing the vectors' code pass. Here's how ..
 
 ```
 export DYLD_LIBRARY_PATH=/usr/local/lib
 go test -v ./... --tags=vectors
+```
+-or-
+```
+go test -ldflags "-r /usr/local/lib" ./... -tags=vectors
 ```
