@@ -567,6 +567,16 @@ func (i *indexImpl) SearchInContext(ctx context.Context, req *SearchRequest) (sr
 		if err != nil {
 			return nil, err
 		}
+		// increment the search count here itself,
+		// since the presearch may already satisfy
+		// the search request
+		atomic.AddUint64(&i.stats.searches, 1)
+		// increment the search time stat here as well,
+		// since presearch is part of the overall search
+		// operation and should be included in the search
+		// time stat
+		searchDuration := time.Since(searchStart)
+		atomic.AddUint64(&i.stats.searchTime, uint64(searchDuration))
 		return preSearchResult, nil
 	}
 
@@ -591,7 +601,7 @@ func (i *indexImpl) SearchInContext(ctx context.Context, req *SearchRequest) (sr
 	var fts search.FieldTermSynonymMap
 	var skipSynonymCollector bool
 
-	var bm25Data *search.BM25Stats
+	var bm25Stats *search.BM25Stats
 	var ok bool
 	if req.PreSearchData != nil {
 		for k, v := range req.PreSearchData {
@@ -614,9 +624,9 @@ func (i *indexImpl) SearchInContext(ctx context.Context, req *SearchRequest) (sr
 				}
 			case search.BM25PreSearchDataKey:
 				if v != nil {
-					bm25Data, ok = v.(*search.BM25Stats)
+					bm25Stats, ok = v.(*search.BM25Stats)
 					if !ok {
-						return nil, fmt.Errorf("bm25 preSearchData must be of type map[string]interface{}")
+						return nil, fmt.Errorf("bm25 preSearchData must be of type *search.BM25Stats")
 					}
 				}
 			}
@@ -658,10 +668,10 @@ func (i *indexImpl) SearchInContext(ctx context.Context, req *SearchRequest) (sr
 	ctx = context.WithValue(ctx, search.GetScoringModelCallbackKey,
 		search.GetScoringModelCallbackFn(scoringModelCallback))
 
-	// set the bm25 presearch data (stats important for consistent scoring) in
+	// set the bm25Stats (stats important for consistent scoring) in
 	// the context object
-	if bm25Data != nil {
-		ctx = context.WithValue(ctx, search.BM25PreSearchDataKey, bm25Data)
+	if bm25Stats != nil {
+		ctx = context.WithValue(ctx, search.BM25StatsKey, bm25Stats)
 	}
 
 	// This callback and variable handles the tracking of bytes read
@@ -811,7 +821,13 @@ func (i *indexImpl) SearchInContext(ctx context.Context, req *SearchRequest) (sr
 	totalSearchCost += storedFieldsCost
 	search.RecordSearchCost(ctx, search.AddM, storedFieldsCost)
 
-	atomic.AddUint64(&i.stats.searches, 1)
+	if req.PreSearchData == nil {
+		// increment the search count only if this is not a second-phase search
+		// (e.g., for Hybrid Search), since the first-phase search already increments it
+		atomic.AddUint64(&i.stats.searches, 1)
+	}
+	// increment the search time stat, as the first-phase search is part of
+	// the overall operation; adding second-phase time later keeps it accurate
 	searchDuration := time.Since(searchStart)
 	atomic.AddUint64(&i.stats.searchTime, uint64(searchDuration))
 
